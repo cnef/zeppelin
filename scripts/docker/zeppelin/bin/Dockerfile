@@ -16,7 +16,7 @@
 FROM ubuntu:16.04
 MAINTAINER Apache Software Foundation <dev@zeppelin.apache.org>
 
-ENV Z_VERSION="0.9.0-preview1"
+ENV Z_VERSION="0.9.0-SNAPSHOT"
 
 ENV LOG_TAG="[ZEPPELIN_${Z_VERSION}]:" \
     Z_HOME="/zeppelin" \
@@ -75,13 +75,14 @@ RUN echo "$LOG_TAG Install python related packages" && \
     conda info -a && \
     conda config --add channels conda-forge && \
     pip install -q pycodestyle==2.5.0 && \
-    pip install -q numpy==1.17.3 pandas==0.25.0 scipy==1.3.1 grpcio==1.19.0 bkzep==0.6.1 hvplot==0.5.2 protobuf==3.10.0 pandasql==0.7.3 ipython==7.8.0 matplotlib==3.0.3 ipykernel==5.1.2 jupyter_client==5.3.4 bokeh==1.3.4 panel==0.6.0 holoviews==1.12.3 seaborn==0.9.0 plotnine==0.5.1 intake==0.5.3 intake-parquet==0.2.2 altair==3.2.0 pycodestyle==2.5.0 apache_beam==2.15.0
+    pip install -q numpy==1.17.3 pandas==0.25.0 scipy==1.3.1 grpcio==1.19.0 bkzep==0.6.1 hvplot==0.5.2 protobuf==3.10.0 pandasql==0.7.3 ipython==7.8.0 matplotlib==3.0.3 ipykernel==5.1.2 jupyter_client==5.3.4 bokeh==1.3.4 panel==0.6.0 holoviews==1.12.3 seaborn==0.9.0 plotnine==0.5.1 intake==0.5.3 intake-parquet==0.2.2 altair==3.2.0 pycodestyle==2.5.0 apache_beam==2.15.0 pyspark pyarrow==0.14.1
 
 RUN echo "$LOG_TAG Install R related packages" && \
     echo "PATH: $PATH" && \
     ls /opt/conda/bin && \
     echo "deb http://cran.rstudio.com/bin/linux/ubuntu xenial/" | tee -a /etc/apt/sources.list && \
-    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 51716619E084DAB9 && \
+    gpg --keyserver keyserver.ubuntu.com --recv-key E084DAB9  && \
+    gpg -a --export E084DAB9 | apt-key add - && \
     apt-get -y update && \
     apt-get -y --allow-unauthenticated install r-base r-base-dev && \
     R -e "install.packages('evaluate', repos = 'https://cloud.r-project.org')" && \
@@ -101,25 +102,55 @@ RUN echo "$LOG_TAG Cleanup" && \
     apt-get autoclean && \
     apt-get clean
 
-RUN echo "$LOG_TAG Download Zeppelin binary" && \
-    wget --quiet -O /tmp/zeppelin-${Z_VERSION}-bin-all.tgz http://archive.apache.org/dist/zeppelin/zeppelin-${Z_VERSION}/zeppelin-${Z_VERSION}-bin-all.tgz && \
-    tar -zxvf /tmp/zeppelin-${Z_VERSION}-bin-all.tgz && \
-    rm -rf /tmp/zeppelin-${Z_VERSION}-bin-all.tgz && \
-    mkdir -p ${Z_HOME} && \
-    mv /zeppelin-${Z_VERSION}-bin-all/* ${Z_HOME}/ && \
-    chown -R root:root ${Z_HOME} && \
-    mkdir -p ${Z_HOME}/logs ${Z_HOME}/run ${Z_HOME}/webapps && \
-    # Allow process to edit /etc/passwd, to create a user entry for zeppelin
-    chgrp root /etc/passwd && chmod ug+rw /etc/passwd && \
-    # Give access to some specific folders
-    chmod -R 775 "${Z_HOME}/logs" "${Z_HOME}/run" "${Z_HOME}/notebook" "${Z_HOME}/conf" && \
-    # Allow process to create new folders (e.g. webapps)
-    chmod 775 ${Z_HOME}
+
 
 COPY log4j.properties ${Z_HOME}/conf/
 
-USER 1000
+ADD zeppelin-${Z_VERSION}.tar.gz /
+RUN rm -rf /zeppelin && \
+    ln -s /zeppelin-${Z_VERSION} /zeppelin
 
+## hive
+ENV HADOOP_VERSION 3.2.1
+ENV HIVE_VERSION 2.3.7
+ENV MYSQL_JDBC_VERSION=5.1.49
+#ENV MYSQL_JDBC=https://dev.mysql.com/get/Downloads/Connector-J/mysql-connector-java-${MYSQL_JDBC_VERSION}.tar.gz
+ENV MYSQL_JDBC=https://cdn.mysql.com//Downloads/Connector-J/mysql-connector-java-${MYSQL_JDBC_VERSION}.tar.gz
+
+RUN cd /opt && \
+  # hadoop
+  echo "Install hadoop." && \
+  wget -q http://apache.claz.org/hadoop/common/hadoop-$HADOOP_VERSION/hadoop-$HADOOP_VERSION.tar.gz && \
+  tar xzf hadoop-$HADOOP_VERSION.tar.gz && \
+  mv hadoop-$HADOOP_VERSION hadoop && \
+  rm -rf hadoop-$HADOOP_VERSION.tar.gz && \
+  # hive 
+  echo "Install hive." && \
+  wget -q http://artfiles.org/apache.org/hive/hive-$HIVE_VERSION/apache-hive-$HIVE_VERSION-bin.tar.gz && \
+  tar xzf apache-hive-$HIVE_VERSION-bin.tar.gz && \
+  mv apache-hive-$HIVE_VERSION-bin hive && \
+  rm -rf apache-hive-$HIVE_VERSION-bin.tar.gz && \
+  # mysql-connector-java
+  echo "Install mysql-connector-java." && \
+  wget -q $MYSQL_JDBC && \
+  tar -xvf mysql-connector-java-${MYSQL_JDBC_VERSION}.tar.gz && \
+  mv mysql-connector-java-${MYSQL_JDBC_VERSION}/*.jar /opt/hive/lib/ && \
+  rm -rf mysql-connector-java-${MYSQL_JDBC_VERSION}.tar.gz mysql-connector-java-${MYSQL_JDBC_VERSION} && \
+  # Keep the guava version consistent
+  rm -rf /opt/hive/lib/guava* && \
+  cp /opt/hadoop/share/hadoop/common/lib/guava-*.jar  /opt/hive/lib/ && \
+  rm -rf /opt/hadoop/share/hadoop/common/lib/slf4j-log4j12-*.jar && \
+  # mysql client
+  sed -i '/cran/d' /etc/apt/sources.list && \
+  apt update && \
+  apt install -y mysql-client netcat
+
+COPY conf/mapred-site.xml /opt/hadoop/etc/hadoop/mapred-site.xml
+COPY conf/hive-site.xml.tpl /opt/hadoop/etc/hadoop/hive-site.xml.tpl
+COPY conf/hive-log4j2.properties /opt/hive/conf/hive-log4j2.properties
+COPY conf/entrypoint.sh /opt/hive-entrypoint.sh
+RUN mkdir -p /zeppelin/run
+ 
 EXPOSE 8080
 
 ENTRYPOINT [ "/usr/bin/tini", "--" ]
