@@ -56,8 +56,6 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.StringReader;
 import java.io.StringWriter;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -72,7 +70,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.stream.Collectors;
 
-import static org.apache.zeppelin.conf.ZeppelinConfiguration.ConfVars.ZEPPELIN_INTERPRETER_MAX_POOL_SIZE;
+import static org.apache.zeppelin.conf.ZeppelinConfiguration.ConfVars.ZEPPELIN_INTERPRETER_CONNECTION_POOL_SIZE;
 import static org.apache.zeppelin.conf.ZeppelinConfiguration.ConfVars.ZEPPELIN_INTERPRETER_OUTPUT_LIMIT;
 import static org.apache.zeppelin.util.IdHashes.generateId;
 
@@ -421,6 +419,10 @@ public class InterpreterSetting {
   }
 
   private String getInterpreterGroupId(ExecutionContext executionContext) {
+    if (!StringUtils.isBlank(executionContext.getInterpreterGroupId())) {
+      return executionContext.getInterpreterGroupId();
+    }
+
     if (executionContext.isInIsolatedMode()) {
       return name + "-isolated-" + executionContext.getNoteId() + "-" +
               executionContext.getStartTime();
@@ -531,6 +533,10 @@ public class InterpreterSetting {
 
   public void closeInterpreters(String user, String noteId) {
     closeInterpreters(new ExecutionContextBuilder().setUser(user).setNoteId(noteId).createExecutionContext());
+  }
+
+  public void closeInterpreters(String interpreterGroupId) {
+    closeInterpreters(new ExecutionContextBuilder().setInterpreterGroupId(interpreterGroupId).createExecutionContext());
   }
 
   public void closeInterpreters(ExecutionContext executionContext) {
@@ -663,9 +669,9 @@ public class InterpreterSetting {
           conf.getInt(ZEPPELIN_INTERPRETER_OUTPUT_LIMIT) + "");
     }
 
-    if (!jProperties.containsKey("zeppelin.interpreter.max.poolsize")) {
-      jProperties.setProperty("zeppelin.interpreter.max.poolsize",
-          conf.getInt(ZEPPELIN_INTERPRETER_MAX_POOL_SIZE) + "");
+    if (!jProperties.containsKey(ZEPPELIN_INTERPRETER_CONNECTION_POOL_SIZE.getVarName())) {
+      jProperties.setProperty(ZEPPELIN_INTERPRETER_CONNECTION_POOL_SIZE.getVarName(),
+          conf.getInt(ZEPPELIN_INTERPRETER_CONNECTION_POOL_SIZE) + "");
     }
 
     String interpreterLocalRepoPath = conf.getInterpreterLocalRepoPath();
@@ -690,7 +696,9 @@ public class InterpreterSetting {
 
   public void setDependencies(List<Dependency> dependencies) {
     this.dependencies = dependencies;
-    loadInterpreterDependencies();
+    if (!this.dependencies.isEmpty()) {
+      loadInterpreterDependencies();
+    }
   }
 
   public InterpreterOption getOption() {
@@ -719,7 +727,9 @@ public class InterpreterSetting {
         this.dependencies.add(dependency);
       }
     }
-    loadInterpreterDependencies();
+    if (!dependencies.isEmpty()) {
+      loadInterpreterDependencies();
+    }
   }
 
   void setInterpreterOption(InterpreterOption interpreterOption) {
@@ -1006,6 +1016,12 @@ public class InterpreterSetting {
               getGroup(), e.getLocalizedMessage()), e);
           setErrorReason(e.getLocalizedMessage());
           setStatus(Status.ERROR);
+        }
+
+        try {
+          interpreterSettingManager.saveToFile();
+        } catch (IOException e) {
+          LOGGER.error("Fail to save interpreter.json", e);
         }
       }
     };
